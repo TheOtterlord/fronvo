@@ -12,6 +12,9 @@ import { instrument, RedisStore } from '@socket.io/admin-ui';
 import { createAdapter } from '@socket.io/cluster-adapter';
 import { setupWorker } from '@socket.io/sticky';
 
+// Ratelimiters
+import { RateLimiterMemory } from 'rate-limiter-flexible';
+
 // Custom event files
 import registerEvents from 'events/main';
 
@@ -98,6 +101,18 @@ async function setupPrisma(): Promise<void> {
     }
 }
 
+function setupRatelimiter(): void {
+    setLoading('Setting up the ratelimiter');
+
+    const rateLimiterPoints = parseInt(process.env.FRONVO_RATELIMITER_POINTS) || 40;
+    const rateLimiterDuration = parseInt(process.env.FRONVO_RATELIMITER_DURATION) || 2.5;
+
+    variables.setRateLimiter(new RateLimiterMemory({
+        points: rateLimiterPoints,
+        duration: rateLimiterDuration
+    }))
+}
+
 function setupServer(): void {
     setLoading('Setting up the server process, server events and admin panel');
 
@@ -113,7 +128,20 @@ function setupServer(): void {
         },
 
         // Enable / Disable binary parser
-        parser: decideBooleanEnvValue(process.env.FRONVO_BINARY_PARSER, true) ? require('socket.io-msgpack-parser') : ''
+        parser: decideBooleanEnvValue(process.env.FRONVO_BINARY_PARSER, true) ? require('socket.io-msgpack-parser') : '',
+        
+        // No namespace detected, disconnect
+        connectTimeout: 5000,
+
+        // Disable HTTPS requests
+        httpCompression: false,
+        maxHttpBufferSize: 0,
+
+        // Strict pong timeout
+        pingTimeout: 5000,
+
+        // Limit to websocket connections
+        transports: ['websocket']
     })
 }
 
@@ -130,18 +158,18 @@ function setupPM2(): void {
 }
 
 function setupAdminPanel(): void {
-    const panel_usr = process.env.FRONVO_ADMIN_PANEL_USERNAME;
-    const panel_pass = process.env.FRONVO_ADMIN_PANEL_PASSWORD;
+    const panelUsername = process.env.FRONVO_ADMIN_PANEL_USERNAME;
+    const panelPassword = process.env.FRONVO_ADMIN_PANEL_PASSWORD;
 
     // Check environmental variables and hash the admin panel password
-    if(panel_usr && panel_pass) {
+    if(panelUsername && panelPassword) {
         instrument(io, {
             auth: {
                 type: 'basic',
-                username: panel_usr,
+                username: panelUsername,
 
                 // hash
-                password: require('bcrypt').hashSync(panel_pass, 10)
+                password: require('bcrypt').hashSync(panelPassword, 10)
             },
 
             // preserve users who logged in with the panel before
@@ -171,6 +199,7 @@ async function startup(): Promise<void> {
 
     // Attempt to run each check one-by-one
     await setupPrisma();
+    setupRatelimiter();
     setupServer();
     setupServerEvents();
     setupPM2();
